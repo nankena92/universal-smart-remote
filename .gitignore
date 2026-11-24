@@ -1,0 +1,26 @@
+# Dependencies / generated
+node_modules/
+ios/Pods/
+ios/build/
+android/build/
+android/app/build/
+android/.gradle/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/data/
+backend/*.db
+backend/*.db-journal
+
+# React Native / Metro
+*.hprof
+local.properties
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
