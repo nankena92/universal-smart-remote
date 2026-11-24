@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+websockets
+httpx
+pydantic
+anyio
+zeroconf
+cryptography
+pytest
+pytest-asyncio
