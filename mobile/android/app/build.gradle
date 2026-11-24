@@ -1,0 +1,132 @@
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+react {
+    /* Folders */
+    // The root of your project, i.e. where "package.json" lives.
+    // Folder which contains your node_modules directory.
+    root = file("../../")
+    // The folder where the react-native NPM package lives (newer versions of
+    // react-native use a monorepo)
+    reactNativeDir = file("../../node_modules/react-native")
+    // The folder where the react-native-codegen package lives.
+    codegenDir = file("../../node_modules/@react-native/codegen")
+    // The cli.js file which is the React Native CLI entrypoint.
+    cliFile = file("../../node_modules/react-native/cli.js")
+
+    /* Variants */
+    // The list of variants that are debuggable. For those we're going to
+    // skip the bundling of the JS bundle and the assets. The release variants
+    // will bundle the JS and the assets instead. This will speed up the debug
+    // builds.
+    debuggableVariants = ["debug"]
+
+    /* Bundling */
+    // The entry file for bundle generation. If none specified and
+    // "index.js" exists, it will be used. Otherwise "index.android.js" is used.
+    entryFile = file("../../index.js")
+    // The name of the generated asset file containing your JS bundle
+    bundleAssetName = "index.android.bundle"
+    // The name of the generated file that holds the source map
+    bundleCommand = "ram-bundle"
+    // The hermes compiler command to run. For example, the path to the hermes
+    // compiler is `../../node_modules/hermes-engine/%OS-BIN%/hermesc`
+    hermesCommand = "../../node_modules/hermes-engine/%OS-BIN%/hermesc"
+}
+
+/**
+ * Set this to true to run Proguard on Release builds to minify the Java bytecode.
+ */
+def enableProguardInReleaseBuilds = false
+
+/**
+ * The preferred build flavor of JavaScriptCore (JSC)
+ */
+def jscFlavor = 'org.webkit:android-jsc:+'
+
+/**
+ * Whether to enable the Hermes virtual machine (Hermes is the default engine).
+ * Controlled by hermesEnabled in gradle.properties.
+ */
+def hermesEnabled = (findProperty('hermesEnabled') ?: "true").toBoolean()
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "com.universalremote"
+    defaultConfig {
+        applicationId "com.universalremote"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+    }
+    signingConfigs {
+        // Release signing (Phase 12): reads the keystore from
+        // local.properties — NEVER commit real
+        // credentials. Create a keystore once and keep it safe
+        // (losing it means you can never update the Play listing):
+        //
+        //   keytool -genkeypair -v -keystore universal-smart-remote.keystore \
+        //     -alias universal-smart-remote -keyalg RSA -keysize 2048 \
+        //     -validity 10000
+        //
+        // Then add to mobile/android/local.properties (git-ignored —
+        // NEVER put these in the tracked gradle.properties):
+        //
+        //   MYAPP_UPLOAD_STORE_FILE=universal-smart-remote.keystore
+        //   MYAPP_UPLOAD_KEY_ALIAS=universal-smart-remote
+        //   MYAPP_UPLOAD_STORE_PASSWORD=<store password>
+        //   MYAPP_UPLOAD_KEY_PASSWORD=<key password>
+        //
+        // (A user-level ~/.gradle/gradle.properties works too.)
+        // Build with:  cd mobile/android && ./gradlew bundleRelease
+        // (AAB for the Play Store) or ./gradlew assembleRelease (APK).
+        // Until a real keystore is configured, the release build falls
+        // back to the debug keystore — DO NOT distribute that build.
+        release {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // Uses the release keystore above when configured; falls
+            // back to the debug keystore otherwise (stock React Native
+            // 0.73 template behaviour — see signingConfigs.release).
+            signingConfig project.hasProperty('MYAPP_UPLOAD_STORE_FILE')
+                ? signingConfigs.release
+                : signingConfigs.debug
+            minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+dependencies {
+    // The version of react-native is set by the React Native Gradle Plugin
+    implementation("com.facebook.react:react-android")
+    implementation("com.facebook.react:react-native")
+
+    // Flipper integration is auto-initialised by React Native 0.73; there is
+    // no ReactNativeFlipper.java to maintain (unlike 0.72 and earlier).
+    implementation("com.facebook.react:flipper-integration")
+
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation jscFlavor
+    }
+}
+
+apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
