@@ -1,0 +1,53 @@
+# Podfile — Universal Smart Remote (React Native 0.73.6)
+#
+# Standard React Native 0.73 Podfile. Run `pod install` from this directory
+# on a Mac after the Xcode project exists (see ios/README.md — there is no
+# .xcodeproj in this repo yet). The Swift native module
+# (UniversalSmartRemote/SmartRemoteNative.swift) is part of the app target,
+# not a pod, so nothing extra needs declaring here; autolinking is not
+# involved for it. Do NOT add `use_frameworks!` — the 0.73 default static
+# libraries are what the bridging header + RCT_EXTERN_MODULE pattern expects.
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+platform :ios, min_ios_version_supported
+prepare_react_native_project!
+
+# If you are using a `react-native-flipper` your iOS build will fail with `pod install`
+# FlipperConfiguration.enabled
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'UniversalSmartRemote' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # Hermes is now enabled by default. Disable by setting this flag to false.
+    :hermes_enabled => true,
+    :fabric_enabled => false,
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  target 'UniversalSmartRemoteTests' do
+    inherit! :complete
+    # Pods for testing
+  end
+
+  post_install do |installer|
+    # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L198
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false
+    )
+  end
+end
