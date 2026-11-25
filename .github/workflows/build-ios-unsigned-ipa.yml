@@ -8,7 +8,10 @@
 # Why this shape:
 # - React Native 0.73.6 needs Xcode 15.x (its minimum is Xcode 15.1).
 #   Newer Xcode (16/26/27) is NOT known to build RN 0.73, so the job pins
-#   Xcode 15.4 on the macos-14 runner and fails loudly if it is gone.
+#   Xcode 15.4 and fails loudly if it is gone. Runner is macos-15:
+#   macos-14 was rejected by GitHub on 2026-11-24 ("The configuration
+#   'macos-14-arm64-us-default' is not supported"), so macos-14 must not
+#   be used again.
 # - There is deliberately no .xcodeproj in this repo (it cannot be made
 #   without a Mac). The job generates one from the stock RN 0.73.6
 #   template, then overlays this repo's ios/ files (Podfile, Info.plist,
@@ -29,7 +32,7 @@ on:
 jobs:
   build-unsigned-ipa:
     name: Build unsigned IPA (free sideload)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
