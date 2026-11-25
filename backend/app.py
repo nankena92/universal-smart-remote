@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.models import database as db
@@ -64,6 +65,19 @@ app = FastAPI(
         "/health require the X-API-Key header."
     ),
     lifespan=lifespan,
+)
+
+# CORS fix (2026-11-24): the web remote page is served from port 8899 and
+# talks to this backend on port 8000, so the browser treats it as
+# cross-origin and blocks the calls without these headers. LAN-only
+# server — the X-API-Key header is still required on every endpoint
+# except /health, and port 8000 must never be port-forwarded.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
