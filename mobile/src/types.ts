@@ -82,7 +82,11 @@ export interface Settings {
 export const DEFAULT_BACKEND_URL = 'http://192.168.1.100:8000';
 
 export const DEFAULT_SETTINGS: Settings = {
-  mode: 'backend',
+  // iPhone-only build: default to direct phone-to-TV control so the app
+  // works with no Python backend / laptop. Backend mode is still available
+  // from Settings for brands direct mode cannot drive (Sony, Android TV,
+  // Google TV, TCL, Fire TV).
+  mode: 'direct',
   backendUrl: DEFAULT_BACKEND_URL,
   apiKey: '',
 };
