@@ -4,16 +4,22 @@
 // returns ms.channel.connect with a token, persisted and reused afterwards.
 // Keys: ms.remote.control {Cmd: "Click", DataOfCmd: KEY_*, TypeOfRemote: "SendRemoteKey"}
 // Launch: ms.channel.emit {event: "ed.apps.launch", ...} with the Tizen app id.
-// The TV uses a self-signed certificate; React Native's WebSocket does not
-// expose a certificate-bypass option, so on-device verification is required:
-// if the platform rejects the self-signed cert, connect() surfaces that real
-// error instead of pretending to connect.
-// NEEDS ON-DEVICE VERIFICATION (see CONTRACTS.md §7).
+// The TV uses a self-signed certificate; the Python backend bypasses that
+// with an unverified SSL context, but React Native's WebSocket does not
+// expose a certificate-bypass option. So this client tries the secure
+// channel first and, if it cannot be established at all (e.g. the platform
+// rejects the self-signed certificate), falls back to plain
+// ws://<ip>:8001 — mirroring the backend adapter's fallback. An explicit
+// ms.channel.unauthorized (Allow denied) is NOT retried on plain ws.
+// NEEDS ON-DEVICE VERIFICATION (see CONTRACTS.md §7): whether this TV
+// accepts the plain channel, and whether wss works at all from the app,
+// can only be settled on the real phone + TV.
 import {RemoteKey} from '../../types';
 import {loadSamsungToken, saveSamsungToken} from '../../utils/storage';
 
 const SAMSUNG_SECURE_PORT = 8002;
-const CONNECT_TIMEOUT_MS = 60000; // TV Allow prompt can take a while
+const SAMSUNG_PLAIN_PORT = 8001;
+const CONNECT_TIMEOUT_MS = 30000; // per attempt; TV Allow prompt can take a while
 const SEND_TIMEOUT_MS = 10000;
 
 const KEY_MAP: Record<RemoteKey, string> = {
@@ -85,91 +91,115 @@ export class SamsungDirectClient {
     }
   }
 
-  private doConnect(ip: string, deviceName: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const run = async () => {
-        const token = await loadSamsungToken(ip);
-        const name = base64Encode(deviceName);
-        let url =
-          `wss://${ip}:${SAMSUNG_SECURE_PORT}/api/v2/channels/samsung.remote.control` +
-          `?name=${encodeURIComponent(name)}`;
-        if (token) {
-          url += `&token=${encodeURIComponent(token)}`;
+  private async doConnect(ip: string, deviceName: string): Promise<void> {
+    const token = await loadSamsungToken(ip);
+    const name = base64Encode(deviceName);
+    let lastError: Error | null = null;
+    // Secure first, plain ws://:8001 second (see header note).
+    for (const secure of [true, false]) {
+      const port = secure ? SAMSUNG_SECURE_PORT : SAMSUNG_PLAIN_PORT;
+      let url =
+        `${secure ? 'wss' : 'ws'}://${ip}:${port}/api/v2/channels/samsung.remote.control` +
+        `?name=${encodeURIComponent(name)}`;
+      if (token) {
+        url += `&token=${encodeURIComponent(token)}`;
+      }
+      try {
+        await this.tryConnectOnce(ip, url, port);
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        // An explicit refusal means the TV said no — retrying on the
+        // plain channel cannot help, so stop here with the real reason.
+        if (lastError.message.includes('refused the connection')) {
+          throw lastError;
         }
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            try {
-              ws.close();
-            } catch {
-              // ignore
-            }
-            reject(
-              new Error(
-                'Timed out waiting for the Samsung TV to accept the connection. ' +
-                  'Check the TV shows an Allow prompt and accept it.',
-              ),
-            );
-          }
-        }, CONNECT_TIMEOUT_MS);
-        const ws = new WebSocket(url);
-        this.ws = ws;
-        ws.onopen = () => {
-          // Wait for ms.channel.connect (carries the token) before resolving.
-        };
-        ws.onmessage = (event: {data?: unknown}) => {
-          let msg: SamsungMessage;
+        // Otherwise (cert rejected, connection refused, timeout, closed):
+        // fall through to the next attempt, or throw after the last one.
+      }
+    }
+    throw (
+      lastError ??
+      new Error(
+        `Could not connect to Samsung TV at ${ip}. Check the TV is on, on the same Wi-Fi, and IP Remote is enabled.`,
+      )
+    );
+  }
+
+  private tryConnectOnce(ip: string, url: string, port: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let ws: WebSocket | null = null;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
           try {
-            msg = JSON.parse(String(event.data)) as SamsungMessage;
+            ws?.close();
           } catch {
-            return;
+            // ignore
           }
-          if (msg.event === 'ms.channel.connect') {
-            if (msg.data?.token) {
-              void saveSamsungToken(ip, msg.data.token);
-            }
-            if (!settled) {
-              settled = true;
-              clearTimeout(timer);
-              resolve();
-            }
-          } else if (msg.event === 'ms.channel.unauthorized') {
-            if (!settled) {
-              settled = true;
-              clearTimeout(timer);
-              reject(
-                new Error(
-                  'Samsung TV refused the connection. The Allow prompt was denied, ' +
-                    'or this phone is blocked in the TV Device Connection Manager.',
-                ),
-              );
-            }
+          reject(
+            new Error(
+              'Timed out waiting for the Samsung TV to accept the connection. ' +
+                'Check the TV shows an Allow prompt and accept it.',
+            ),
+          );
+        }
+      }, CONNECT_TIMEOUT_MS);
+      ws = new WebSocket(url);
+      this.ws = ws;
+      ws.onopen = () => {
+        // Wait for ms.channel.connect (carries the token) before resolving.
+      };
+      ws.onmessage = (event: {data?: unknown}) => {
+        let msg: SamsungMessage;
+        try {
+          msg = JSON.parse(String(event.data)) as SamsungMessage;
+        } catch {
+          return;
+        }
+        if (msg.event === 'ms.channel.connect') {
+          if (msg.data?.token) {
+            void saveSamsungToken(ip, msg.data.token);
           }
-        };
-        ws.onerror = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+          }
+        } else if (msg.event === 'ms.channel.unauthorized') {
           if (!settled) {
             settled = true;
             clearTimeout(timer);
             reject(
               new Error(
-                `Could not connect to Samsung TV at ${ip}:8002. ` +
-                  'Check the TV is on, on the same Wi-Fi, and IP Remote is enabled. ' +
-                  'Note: the TV uses a self-signed certificate — see NEEDS ON-DEVICE VERIFICATION in samsungDirect.ts.',
+                'Samsung TV refused the connection. The Allow prompt was denied, ' +
+                  'or this phone is blocked in the TV Device Connection Manager.',
               ),
             );
           }
-        };
-        ws.onclose = () => {
-          this.ws = null;
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            reject(new Error(`Samsung TV at ${ip} closed the connection.`));
-          }
-        };
+        }
       };
-      void run().catch(reject);
+      ws.onerror = () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(
+            new Error(
+              `Could not connect to Samsung TV at ${ip}:${port}. ` +
+                'Check the TV is on, on the same Wi-Fi, and IP Remote is enabled.',
+            ),
+          );
+        }
+      };
+      ws.onclose = () => {
+        this.ws = null;
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(`Samsung TV at ${ip} closed the connection.`));
+        }
+      };
     });
   }
 
