@@ -1,0 +1,136 @@
+# Build an UNSIGNED iOS .ipa in the cloud — free, no Mac, no paid Apple
+# Developer account. Run manually: GitHub repo -> Actions -> "Build iOS
+# unsigned IPA" -> Run workflow. The .ipa is an artifact of the run
+# (14-day retention); download it on the iPhone and install it with
+# SideStore / AltStore, which sign it on-device with a free Apple ID.
+# See documentation/ios-sideload-guide.md for the full install story.
+#
+# Why this shape:
+# - React Native 0.73.6 needs Xcode 15.x (its minimum is Xcode 15.1).
+#   Newer Xcode (16/26/27) is NOT known to build RN 0.73, so the job pins
+#   Xcode 15.4 on the macos-14 runner and fails loudly if it is gone.
+# - There is deliberately no .xcodeproj in this repo (it cannot be made
+#   without a Mac). The job generates one from the stock RN 0.73.6
+#   template, then overlays this repo's ios/ files (Podfile, Info.plist,
+#   Swift native module) exactly as mobile/ios/README.md describes.
+# - Code signing is disabled (CODE_SIGNING_ALLOWED=NO). The output is an
+#   UNSIGNED .ipa: it cannot run until a sideloading tool signs it with
+#   the owner's free Apple ID. That signature lasts 7 days (free Apple ID
+#   limit) and the app must be re-signed weekly.
+# - The app defaults to DIRECT mode (mobile/src/types.ts), so it talks
+#   straight from the phone to the TV — no Python backend, no laptop.
+#   Samsung/LG/Roku direct clients are already in the app; Sony, Android
+#   TV, Google TV, TCL and Fire TV still need backend mode.
+name: Build iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-unsigned-ipa:
+    name: Build unsigned IPA (free sideload)
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Select Xcode 15.4
+        run: |
+          echo "Available Xcode versions:"
+          ls /Applications/ | grep -i xcode || true
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          else
+            echo "::error::Xcode 15.4 is not on this runner. React Native 0.73.6 needs Xcode 15.x; do not silently build with a newer Xcode."
+            exit 1
+          fi
+          xcodebuild -version
+          node --version
+          npm --version
+
+      - name: Install JS dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit --strict
+
+      - name: Generate the Xcode project from the RN 0.73.6 template
+        run: |
+          set -e
+          npx --yes react-native@0.73.6 init UniversalSmartRemote \
+            --version 0.73.6 --directory /tmp/rn-scaffold --skip-install
+          # Scaffold pieces this repo cannot supply (see mobile/ios/README.md).
+          cp -R /tmp/rn-scaffold/ios/UniversalSmartRemote.xcodeproj ios/
+          cp /tmp/rn-scaffold/ios/UniversalSmartRemote/AppDelegate.mm ios/UniversalSmartRemote/
+          cp /tmp/rn-scaffold/ios/UniversalSmartRemote/main.m ios/UniversalSmartRemote/
+          cp /tmp/rn-scaffold/ios/UniversalSmartRemote/LaunchScreen.storyboard ios/UniversalSmartRemote/
+          cp -R /tmp/rn-scaffold/ios/UniversalSmartRemoteTests ios/
+          # Repo files win over the scaffold's (Podfile, Info.plist, Swift module).
+          # They are already in place from the checkout; verify the key ones exist.
+          test -f ios/Podfile
+          test -f ios/UniversalSmartRemote/Info.plist
+          test -f ios/UniversalSmartRemote/SmartRemoteNative.swift
+          test -f ios/UniversalSmartRemote/UniversalSmartRemote-Bridging-Header.h
+          ls ios/UniversalSmartRemote.xcodeproj
+
+      - name: Install CocoaPods
+        working-directory: mobile/ios
+        run: pod install
+
+      - name: Bundle JavaScript offline (no Metro at build time)
+        run: |
+          npx react-native bundle \
+            --platform ios \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output ios/main.jsbundle \
+            --assets-dest ios
+
+      - name: Build unsigned archive
+        run: |
+          xcodebuild \
+            -workspace ios/UniversalSmartRemote.xcworkspace \
+            -scheme UniversalSmartRemote \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/UniversalSmartRemote.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            PRODUCT_BUNDLE_IDENTIFIER=com.universalremote.UniversalSmartRemote \
+            archive
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP_PATH=$(find build/UniversalSmartRemote.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app found in the archive. The Xcode build did not produce an app bundle."
+            exit 1
+          fi
+          echo "Packaging $APP_PATH"
+          rm -rf Payload UniversalSmartRemote-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r UniversalSmartRemote-unsigned.ipa Payload
+          ls -lh UniversalSmartRemote-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-smart-remote-unsigned-ipa
+          path: mobile/UniversalSmartRemote-unsigned.ipa
+          retention-days: 14
+          if-no-files-found: error
